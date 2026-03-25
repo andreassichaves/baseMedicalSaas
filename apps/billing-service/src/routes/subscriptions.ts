@@ -1,100 +1,150 @@
 import { Router } from "express";
-import { stripe } from "../services/stripe.service";
-import { supabase } from "../services/supabase.service";
+import { getBillingApplication } from "../composition/wiring";
 
 export const subscriptionRoutes = Router();
 
-subscriptionRoutes.post("/checkout", async (req, res) => {
+subscriptionRoutes.post("/create", async (req, res) => {
   try {
-    const { orgId, priceId } = req.body;
+    const {
+      orgId,
+      paymentMethod,
+      card,
+      customerName,
+      customerEmail,
+      customerDocument,
+    } = req.body;
 
-    if (!orgId || !priceId) {
-      res.status(400).json({ error: "orgId and priceId are required" });
-      return;
-    }
-
-    const { data: org } = await supabase
-      .from("organizations")
-      .select("id, name, stripe_customer_id")
-      .eq("id", orgId)
-      .single();
-
-    if (!org) {
-      res.status(404).json({ error: "Organization not found" });
-      return;
-    }
-
-    let customerId = org.stripe_customer_id;
-
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        name: org.name,
-        metadata: { orgId: org.id },
+    if (
+      !orgId ||
+      !paymentMethod ||
+      !customerName ||
+      !customerEmail ||
+      !customerDocument
+    ) {
+      res.status(400).json({
+        error:
+          "orgId, paymentMethod, customerName, customerEmail, and customerDocument are required",
       });
-      customerId = customer.id;
-
-      await supabase
-        .from("organizations")
-        .update({ stripe_customer_id: customerId })
-        .eq("id", orgId);
+      return;
     }
 
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: "subscription",
-      payment_method_types: ["card"],
-      line_items: [{ price: priceId, quantity: 1 }],
-      metadata: { orgId },
-      success_url: `${process.env.FRONTEND_URL}/dashboard?checkout=success`,
-      cancel_url: `${process.env.FRONTEND_URL}/settings/billing?checkout=canceled`,
+    if (
+      paymentMethod !== "credit_card" &&
+      paymentMethod !== "boleto" &&
+      paymentMethod !== "pix"
+    ) {
+      res.status(400).json({
+        error: "paymentMethod must be credit_card, boleto, or pix",
+      });
+      return;
+    }
+
+    const app = getBillingApplication();
+    const result = await app.createSubscription({
+      orgId,
+      paymentMethod,
+      card,
+      customer: {
+        name: customerName,
+        email: customerEmail,
+        document: customerDocument,
+      },
     });
 
-    res.json({ url: session.url });
+    res.json({
+      subscription_id: result.subscription_id,
+      status: result.status,
+      provider: app.activeProvider,
+      boleto_url: result.boleto_url,
+      boleto_barcode: result.boleto_barcode,
+      pix_qr_code: result.pix_qr_code,
+      pix_copy_paste: result.pix_copy_paste,
+    });
   } catch (error) {
-    console.error("Checkout error:", error);
-    res.status(500).json({ error: "Failed to create checkout session" });
+    console.error("Create subscription error:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to create subscription";
+    res.status(500).json({ error: message });
   }
 });
 
-subscriptionRoutes.post("/portal", async (req, res) => {
+subscriptionRoutes.post("/cancel", async (req, res) => {
   try {
-    const { stripeCustomerId } = req.body;
+    const { orgId } = req.body;
 
-    if (!stripeCustomerId) {
-      res.status(400).json({ error: "stripeCustomerId is required" });
+    if (!orgId) {
+      res.status(400).json({ error: "orgId is required" });
       return;
     }
 
-    const session = await stripe.billingPortal.sessions.create({
-      customer: stripeCustomerId,
-      return_url: `${process.env.FRONTEND_URL}/settings/billing`,
-    });
-
-    res.json({ url: session.url });
+    await getBillingApplication().cancelSubscription(orgId);
+    res.json({ status: "canceled" });
   } catch (error) {
-    console.error("Portal error:", error);
-    res.status(500).json({ error: "Failed to create portal session" });
+    console.error("Cancel subscription error:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to cancel subscription";
+    res.status(500).json({ error: message });
+  }
+});
+
+subscriptionRoutes.post("/update-payment", async (req, res) => {
+  try {
+    const { orgId, card } = req.body;
+
+    if (!orgId || !card) {
+      res.status(400).json({ error: "orgId and card are required" });
+      return;
+    }
+
+    await getBillingApplication().updatePayment(orgId, card);
+    res.json({ status: "updated" });
+  } catch (error) {
+    console.error("Update payment error:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to update payment method";
+    res.status(500).json({ error: message });
   }
 });
 
 subscriptionRoutes.get("/status/:orgId", async (req, res) => {
   try {
     const { orgId } = req.params;
+    const status = await getBillingApplication().getStatus(orgId);
 
-    const { data: org } = await supabase
-      .from("organizations")
-      .select("subscription_status, plan, trial_ends_at")
-      .eq("id", orgId)
-      .single();
-
-    if (!org) {
+    if (!status) {
       res.status(404).json({ error: "Organization not found" });
       return;
     }
 
-    res.json(org);
+    res.json(status);
   } catch (error) {
     console.error("Status error:", error);
     res.status(500).json({ error: "Failed to get subscription status" });
   }
+});
+
+subscriptionRoutes.get("/invoices/:orgId", async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { supabase } = await import("../services/supabase.service");
+
+    const { data: invoices, error } = await supabase
+      .from("invoices")
+      .select("*")
+      .eq("org_id", orgId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    res.json(invoices ?? []);
+  } catch (error) {
+    console.error("Invoices error:", error);
+    res.status(500).json({ error: "Failed to list invoices" });
+  }
+});
+
+subscriptionRoutes.get("/provider", (_req, res) => {
+  res.json({ provider: getBillingApplication().activeProvider });
 });

@@ -1,145 +1,119 @@
 import { Router, raw } from "express";
-import Stripe from "stripe";
-import { stripe } from "../services/stripe.service";
+import crypto from "node:crypto";
+import { SupabaseBillingPersistence } from "../adapters/supabase/supabase-billing.persistence";
+/**
+ * Webhook Asaas tambem pode ser servido pela Edge Function `supabase/functions/asaas-webhook`
+ * (URL publica HTTPS sem ngrok). Nao configures o mesmo evento em duas URLs — evita duplicar
+ * `payment_events` e efeitos colaterais.
+ */
+import { verifyAsaasWebhook, parseAsaasWebhookPayload } from "../adapters/asaas/asaas.webhook";
+import {
+  verifyPagarmeSignature,
+  parsePagarmeWebhookPayload,
+} from "../adapters/pagarme/pagarme.webhook";
 import { supabase } from "../services/supabase.service";
+import type { BillingDomainEvent } from "../domain/billing-events";
 
 export const webhookRoutes = Router();
 
+const persistence = new SupabaseBillingPersistence(supabase);
+
+function firstCustomerId(events: BillingDomainEvent[]): string | null {
+  for (const e of events) {
+    if ("externalCustomerId" in e && e.externalCustomerId) {
+      return e.externalCustomerId;
+    }
+  }
+  return null;
+}
+
 webhookRoutes.post(
-  "/stripe",
+  "/asaas",
   raw({ type: "application/json" }),
   async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-
-    if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
-      res.status(400).send("Missing signature or webhook secret");
+    if (!verifyAsaasWebhook(req.headers as Record<string, string | string[] | undefined>)) {
+      res.status(401).send("Invalid webhook token");
       return;
     }
 
-    let event: Stripe.Event;
-
+    let body: Record<string, unknown>;
     try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      console.error("Webhook signature verification failed:", err);
-      res.status(400).send("Invalid signature");
+      body = JSON.parse(req.body.toString());
+    } catch {
+      res.status(400).send("Invalid JSON");
       return;
     }
 
+    const { events, eventType, eventId } = parseAsaasWebhookPayload(body);
+
     try {
-      switch (event.type) {
-        case "checkout.session.completed": {
-          const session = event.data.object as Stripe.Checkout.Session;
-          const orgId = session.metadata?.orgId;
-          if (orgId) {
-            await supabase
-              .from("organizations")
-              .update({
-                stripe_customer_id: session.customer as string,
-                subscription_status: "active",
-                plan: "pro",
-              })
-              .eq("id", orgId);
-
-            await supabase.from("subscriptions").insert({
-              org_id: orgId,
-              stripe_subscription_id: session.subscription as string,
-              status: "active",
-              plan: "pro",
-            });
-          }
-          break;
-        }
-
-        case "invoice.payment_succeeded": {
-          const invoice = event.data.object as Stripe.Invoice;
-          const customerId = invoice.customer as string;
-
-          const { data: org } = await supabase
-            .from("organizations")
-            .select("id")
-            .eq("stripe_customer_id", customerId)
-            .single();
-
-          if (org) {
-            await supabase.from("invoices").insert({
-              org_id: org.id,
-              stripe_invoice_id: invoice.id,
-              amount_cents: invoice.amount_paid,
-              currency: invoice.currency,
-              status: "paid",
-              hosted_invoice_url: invoice.hosted_invoice_url,
-              period_start: new Date((invoice.period_start ?? 0) * 1000).toISOString(),
-              period_end: new Date((invoice.period_end ?? 0) * 1000).toISOString(),
-            });
-          }
-          break;
-        }
-
-        case "invoice.payment_failed": {
-          const invoice = event.data.object as Stripe.Invoice;
-          const customerId = invoice.customer as string;
-
-          await supabase
-            .from("organizations")
-            .update({ subscription_status: "past_due" })
-            .eq("stripe_customer_id", customerId);
-          break;
-        }
-
-        case "customer.subscription.updated": {
-          const subscription = event.data.object as Stripe.Subscription;
-          const customerId = subscription.customer as string;
-
-          await supabase
-            .from("organizations")
-            .update({ subscription_status: subscription.status })
-            .eq("stripe_customer_id", customerId);
-
-          await supabase
-            .from("subscriptions")
-            .update({
-              status: subscription.status,
-              current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-              current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-            })
-            .eq("stripe_subscription_id", subscription.id);
-          break;
-        }
-
-        case "customer.subscription.deleted": {
-          const subscription = event.data.object as Stripe.Subscription;
-          const customerId = subscription.customer as string;
-
-          await supabase
-            .from("organizations")
-            .update({ subscription_status: "canceled", plan: "free" })
-            .eq("stripe_customer_id", customerId);
-
-          await supabase
-            .from("subscriptions")
-            .update({
-              status: "canceled",
-              canceled_at: new Date().toISOString(),
-            })
-            .eq("stripe_subscription_id", subscription.id);
-          break;
-        }
+      if (events.length > 0) {
+        await persistence.applyDomainEvents(events);
       }
 
-      await supabase.from("payment_events").insert({
-        stripe_event_id: event.id,
-        event_type: event.type,
-        payload: event.data.object as Record<string, unknown>,
+      const customerId = firstCustomerId(events);
+      const orgId = customerId
+        ? await persistence.findOrgIdByExternalCustomerId(customerId)
+        : null;
+
+      await persistence.insertPaymentEvent({
+        org_id: orgId,
+        external_event_id: `asaas_${eventId}_${crypto.randomUUID().slice(0, 8)}`,
+        event_type: eventType,
+        payload: body,
       });
 
       res.json({ received: true });
     } catch (error) {
-      console.error("Webhook processing error:", error);
+      console.error("Asaas webhook error:", error);
+      res.status(500).json({ error: "Webhook processing failed" });
+    }
+  }
+);
+
+webhookRoutes.post(
+  "/pagarme",
+  raw({ type: "application/json" }),
+  async (req, res) => {
+    const signature = req.headers["x-hub-signature"] as string | undefined;
+
+    if (!verifyPagarmeSignature(req.body, signature)) {
+      res.status(400).send("Invalid signature");
+      return;
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(req.body.toString());
+    } catch {
+      res.status(400).send("Invalid JSON");
+      return;
+    }
+
+    const { events, eventType, eventId } = parsePagarmeWebhookPayload(body);
+
+    try {
+      if (events.length > 0) {
+        await persistence.applyDomainEvents(events);
+      }
+
+      const customerId = firstCustomerId(events);
+      const orgId = customerId
+        ? await persistence.findOrgIdByExternalCustomerId(customerId)
+        : null;
+
+      await persistence.insertPaymentEvent({
+        org_id: orgId,
+        external_event_id: eventId,
+        event_type: eventType,
+        payload: body.data && typeof body.data === "object"
+          ? (body.data as Record<string, unknown>)
+          : body,
+      });
+
+      res.json({ received: true });
+    } catch (error) {
+      console.error("Pagarme webhook error:", error);
       res.status(500).json({ error: "Webhook processing failed" });
     }
   }

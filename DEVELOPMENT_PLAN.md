@@ -5,47 +5,215 @@
 **Produto:** Portal SaaS multi-produto com billing unificado.
 **SaaS #1:** Inventario de Equipamentos com gestao de manutencoes.
 **Modelo de receita:** Assinatura mensal de R$600/cliente.
-**Stack:** Next.js + Supabase + Node.js billing service + Stripe.
-**Timeline estimada:** 14 semanas para MVP lancavel.
+**Stack:** Next.js + Supabase + Node.js billing service + Asaas.
+**Timeline estimada:** 16 semanas para MVP lancavel.
+
+**Documento:** este arquivo e a fonte oficial do roteiro. O **planejado x executado** fica na secao [Etapas de desenvolvimento (visao geral)](#etapas-de-desenvolvimento-visao-geral); as tarefas detalhadas ficam nas secoes de cada fase.
+
+---
+
+## Etapas de desenvolvimento (visao geral)
+
+<span id="etapas-de-desenvolvimento-visao-geral"></span>
+
+### Planejado x executado (Marco 2026)
+
+**Atualize** a data no titulo e as tabelas quando um milestone for concluido. **Ultima revisao:** Mar 2026 — **Fase 0 fechada:** Supabase hosted (`link` + migrations **001–010**), env Asaas/webhook alinhados, **smoke test local** OK (`turbo dev` / web **:3000**, billing **:4000**). **Opcional ainda:** `git push` de commits pendentes; CI em Actions. Fase 1 — hook JWT **validado em hosted** (claims `org_id` e `portal_role` no access token).
+
+**Executado (ja no monorepo)**
+
+| Fase | O que ja existe |
+|------|-----------------|
+| **0 — Setup** | Workspaces npm + **Turbo** (`dev`, `dev:web`, `dev:billing`); `apps/web` (Next.js App Router, Tailwind, UI base); `apps/billing-service` (Express) + **Dockerfile**; `packages/shared`; `docker-compose.yml`; pasta `supabase/` com **migrations** e CLI; exemplos de env no billing (`.env.example`). **Hosted:** `supabase link` + **`db push`** (ou SQL Editor) — historico alinhado; migrations **001–010** no remoto. **Validado localmente:** `npm run dev` / `turbo dev` — web **:3000**, billing **:4000** (+ `/health`). **Opcional:** sincronizar commits com `origin`; **CI** (Actions) quando conveniente. |
+| **1 — Auth + portal** | Migrations **001–003** + **010** (`custom_access_token_hook`). **Registro** (`/register` + API), **login**, **esqueci senha**. **Middleware** do portal. Layout, **dashboard**, catalogo; publico (**/**, `/pricing`, `/features`). Hook **local** (`config.toml`) e **hosted** (Dashboard `/auth/hooks` + SQL aplicado); JWT do utilizador inclui **`org_id`** e **`portal_role`** (confirmado no fluxo de login). |
+| **2 — RBAC** | Migration **004** + **008/009**. **`usePermissions`**, **`PermissionGate`**. **`/settings`**, **`/settings/users`** e **convite** (API). |
+| **3 — Inventario** | Migrations **005–006**. CRUD **equipamentos**, **categorias/localizacoes**, **manutencoes**, **agendamentos**, **relatorios**, API **dashboard/stats**. |
+| **4 — Billing (API)** | Migration **007**. **Billing hexagonal**, Asaas + Pagar.me, webhooks, assinatura (**create** `credit_card` / `boleto` / `pix` — PIX so Asaas), cancel, update-payment, status, invoices, **health** / **provider**. |
+
+**Planejado mas ainda parcial ou pendente**
+
+| Escopo | Situacao |
+|--------|----------|
+| **Fase 4 — UI billing** | **`/settings/billing`** esqueleto; falta checkout integrado, tokenizacao na UI, QR PIX/boleto na pratica — **4.7–4.9**. |
+| **Fase 4 — Assinatura e acesso** | RLS / UX por **`subscription_status`**, trial, dunning — **4.11–4.13**. |
+| **Fase 4 — API billing segura** | **JWT** nas rotas `/api/subscriptions/*` — **4.1**. |
+| **Fase 4 — Operacional Asaas** | NFS-e e webhook URL em **producao** (painel Asaas). |
+| **Fase 3 — Alertas** | **Edge Function** / cron de alertas — **3.11** (existe **asaas-webhook**; falta funcao dedicada a alertas de manutencao). |
+| **Fase 5** | Deploy, monitoramento, CI, smoke test — em grande parte **pendente**. |
+
+### Mapa de fases (planejado)
+
+**Status (atualizar com o repo):** **Pronto** — entregavel principal da fase atendido no codigo; **Em andamento** — parte feita, falta escopo da fase; **Não iniciado** — ainda nao comecou. A coluna **O que falta** preenche so quando **Status = Em andamento**; nas outras linhas use **—**.
+
+| Etapa | Fase | Status | O que falta | Semanas (ref.) | Foco principal | Entregavel resumido |
+|-------|------|--------|-------------|----------------|----------------|---------------------|
+| 1 | [Fase 0](#fase-0) — Monorepo e ambientes | Pronto | — | 1 | Monorepo, Supabase, Asaas sandbox, ambientes | `turbo dev` sobe web + billing localmente (validado) |
+| 2 | [Fase 1](#fase-1) — Auth e portal | Pronto | — | 2-3 | Auth, organizacao, shell do portal, catalogo SaaS | Registro/login, dashboard com produtos |
+| 3 | [Fase 2](#fase-2) — RBAC e usuarios | Pronto | — | 4-5 | RBAC portal + permissoes por SaaS, usuarios, convites | Gestao de membros e isolamento por tenant |
+| 4 | [Fase 3](#fase-3) — Inventario SaaS | Em andamento | **Edge Function** / cron de alertas de manutencao (**3.11**); `asaas-webhook` ja existe — falta funcao/cron de alertas; opcional: notificacoes in-app completas (**3.12**) | 6-9 | SaaS #1 — Inventario e manutencoes | Modulo operacional + relatorios |
+| 5 | [Fase 4](#fase-4) — Billing e cobranca | Em andamento | **JWT** nas rotas `/api/subscriptions/*` (**4.1**); checkout UI + integracao ao billing (**4.7–4.9**); RLS/UX por **`subscription_status`**, trial, dunning (**4.11–4.13**); NFS-e e webhook Asaas em **producao** (painel) | 10-13 | Billing hexagonal, gateways, webhooks, checkout UI, assinatura no portal | Cobranca PIX/boleto/cartao, NFS-e, bloqueio por status |
+| 6 | [Fase 5](#fase-5) — Lancamento MVP | Não iniciado | — | 14-16 | Qualidade, deploy producao, monitoramento, smoke tests | MVP em producao |
+| — | [Apos o lancamento](#apos-o-lancamento) — Evolucao pos-MVP | Não iniciado | — | continuo | Evolucao pos-MVP | Roadmap de produto |
+
+### Dependencias e ordem sugerida
+
+1. **Fase 0** e pre-requisito de tudo (repo, Supabase, credenciais, billing service rodando localmente).
+2. **Fase 1** estabelece identidade, organizacao e navegacao do portal — sem isso nao ha produto autenticado.
+3. **Fase 2** pode comecar em paralelo ao final da Fase 1, mas precisa do modelo `org` + Auth estavel.
+4. **Fase 3** (Inventario) e o primeiro modulo de receita de uso; depende de portal + RBAC minimo para rotas protegidas.
+5. **Fase 4** — backend de billing pode avancar em paralelo ao modulo de inventario, mas **checkout integrado e bloqueio por assinatura** assumem organizacao e status persistidos (Fases 1-2 + migrations de assinatura).
+6. **Fase 5** agrega tudo para release.
+
+### Checklists por fase
+
+Nas secoes [Fase 0](#fase-0) a [Fase 5](#fase-5), marque `[x]` conforme o codigo for ficando alinhado ao quadro **Planejado x executado** acima.
 
 ---
 
 ## Fase 0 — Setup do Projeto (Semana 1)
 
+<span id="fase-0"></span>
+
 **Objetivo:** Estrutura do monorepo pronta, ambientes configurados, CI basico.
 
 ### Tasks
 
-- [ ] **0.1** Criar repositorio no GitHub
-- [ ] **0.2** Inicializar monorepo com Turborepo
+- [x] **0.1** Criar repositorio no GitHub (remoto `origin` configurado; **sincronizar** commits pendentes com `git push` quando for commitar)
+- [x] **0.2** Inicializar monorepo com Turborepo
   - `apps/web` — Next.js 15 com App Router
   - `apps/billing-service` — Node.js com Express/Fastify
   - `packages/shared` — Tipos TypeScript compartilhados
-- [ ] **0.3** Configurar Next.js
+- [x] **0.3** Configurar Next.js
   - TypeScript strict mode
   - Tailwind CSS
   - shadcn/ui (instalar componentes base: Button, Card, Input, Dialog, Table, Dropdown)
   - ESLint + Prettier
-- [ ] **0.4** Criar projeto no Supabase
+- [x] **0.4** Criar projeto no Supabase
   - Anotar URL e chaves (anon, service_role)
   - Configurar Supabase CLI local (`supabase init`)
-- [ ] **0.5** Criar conta Stripe
-  - Ativar modo teste
-  - Criar produto "Plano Pro" com preco R$600/mes
-  - Configurar webhook endpoint (apontar para URL do billing service)
-  - Anotar secret key, publishable key, webhook secret
-- [ ] **0.6** Configurar variáveis de ambiente
+  - **Feito no hosted:** `supabase link` + aplicar migrations no remoto (`supabase db push` ou SQL Editor; `migration repair` se o esquema ja existia sem historico CLI)
+- [x] **0.5** Criar conta Asaas
+  - Ativar ambiente sandbox (https://sandbox.asaas.com)
+  - Criar conta digital PJ
+  - Gerar **API key** na aba Integracoes (sandbox) → `ASAAS_API_KEY` + `ASAAS_BASE_URL` sandbox no `.env`
+  - Definir **token do webhook** (mesmo valor no painel Asaas e em `ASAAS_WEBHOOK_TOKEN`)
+  - Configurar **URL do webhook** (Edge `.../functions/v1/asaas-webhook` **ou** billing `.../api/webhooks/asaas` + tunel) — ver subsecao *Fechar a Fase 0*
+- [x] **0.6** Configurar variáveis de ambiente
   - `.env.local` para Next.js (SUPABASE_URL, SUPABASE_ANON_KEY, BILLING_SERVICE_URL)
-  - `.env` para billing service (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-- [ ] **0.7** Configurar docker-compose.yml para desenvolvimento local
+  - `.env` para billing service: `BILLING_PROVIDER` (`asaas` ou `pagarme`), credenciais do gateway ativo (`ASAAS_*` ou `PAGARME_*`), `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- [x] **0.7** Configurar docker-compose.yml para desenvolvimento local
   - Supabase local (opcional, pode usar hosted)
   - Billing service
 
 **Entregavel:** `turbo dev` sobe frontend e billing service localmente.
 
+**Validacao (feito):** `npm run dev` ou `turbo dev` — **http://localhost:3000** (web) e **http://localhost:4000/health** (billing) confirmados em ambiente local (Mar 2026).
+
+#### Fechar a Fase 0 (ordem pratica — depois do monorepo ja existir)
+
+1. **Supabase (0.4)** — Projeto criado; URL + **anon** + **service_role** no painel. CLI: `supabase link` ao projeto remoto; migrations com `db push` (ou SQL Editor). **Estado Mar 2026:** link + **001–010** aplicadas no hosted.
+2. **Variaveis de ambiente (0.6)**  
+   - `apps/web/.env.local` — copiar de [apps/web/.env.example](./apps/web/.env.example): `NEXT_PUBLIC_SUPABASE_*`, `BILLING_SERVICE_URL=http://localhost:4000`.  
+   - `apps/billing-service/.env` — copiar de [apps/billing-service/.env.example](./apps/billing-service/.env.example): `BILLING_PROVIDER=asaas`, `ASAAS_*`, `SUPABASE_*`, `FRONTEND_URL`.
+3. **Asaas (0.5) — com conta ja criada**  
+   - Usar **sandbox**: `ASAAS_BASE_URL=https://api-sandbox.asaas.com/v3` e API key de **Integracoes** (ambiente de testes).  
+   - Definir um **token de webhook** (string secreta); colar o **mesmo** valor em `ASAAS_WEBHOOK_TOKEN` no `.env` do billing service e no painel Asaas (onde o Asaas pede token / senha do webhook).  
+   - **URL do webhook (recomendado para comecar):** Edge Function Supabase — `https://<PROJECT_REF>.supabase.co/functions/v1/asaas-webhook` (HTTPS publico, sem tunel). Ver *Webhook Asaas* abaixo.  
+   - **Alternativa:** `POST` para `https://<host-publico>/api/webhooks/asaas` no **billing-service** (porta 4000 + ngrok/tunel se for localhost). **Nao** uses as duas URLs ao mesmo tempo para o mesmo fluxo.  
+4. **Subir tudo (0.7 + entregavel)** — Na raiz: `npm install` (se necessario), `npm run dev` ou `turbo dev`; confirmar `http://localhost:3000` (web) e `http://localhost:4000/health` (billing). Opcional: `docker compose up` so para o billing, com `.env` montado.  
+5. **Repositorio remoto + CI (0.1)** — Repo + `origin` ok; **push** dos commits em falta quando commitares; Actions/workflow de CI (lint/build) quando quiseres.
+
+##### Webhook Asaas (0.5) — passo a passo
+
+O Asaas envia **`POST`** com JSON e o header **`asaas-access-token`** (mesmo valor em todo o lado). Ha **duas** formas de receber — escolhe **uma** (evita duplicar registos em `payment_events`):
+
+| Destino | URL no Asaas | Onde configurar o token |
+|---------|----------------|-------------------------|
+| **Edge Function (recomendado)** | `https://<PROJECT_REF>.supabase.co/functions/v1/asaas-webhook` | Secret **`ASAAS_WEBHOOK_TOKEN`** no projeto Supabase + (opcional) `supabase/.env.edge` local |
+| **Billing Node** | `https://<tunel-ou-deploy>/api/webhooks/asaas` | `apps/billing-service/.env` → `ASAAS_WEBHOOK_TOKEN` |
+
+Codigo da funcao: [supabase/functions/asaas-webhook/index.ts](./supabase/functions/asaas-webhook/index.ts). Logica espelha [asaas.webhook.ts](./apps/billing-service/src/adapters/asaas/asaas.webhook.ts) + persistencia em `organizations`, `subscriptions`, `invoices`, `payment_events`.
+
+**A) Edge Function — Supabase (Dashboard + CLI)**
+
+1. **Deploy da funcao** (na pasta do repo, com [Supabase CLI](https://supabase.com/docs/guides/cli) logado):  
+   `supabase functions deploy asaas-webhook`  
+   O ficheiro [supabase/config.toml](./supabase/config.toml) ja tem `[functions.asaas-webhook] verify_jwt = false` (obrigatorio: o Asaas **nao** envia JWT do Supabase).
+
+2. **Secret no projeto Supabase** (mesmo token que vais por no Asaas):  
+   `supabase secrets set ASAAS_WEBHOOK_TOKEN=<teu_token> --project-ref <PROJECT_REF>`  
+   Ou: Dashboard → **Project Settings** → **Edge Functions** → **Secrets** → adicionar `ASAAS_WEBHOOK_TOKEN`.
+
+3. **URL para colar no Asaas:**  
+   `https://<PROJECT_REF>.supabase.co/functions/v1/asaas-webhook`  
+   (`PROJECT_REF` = Reference ID do projeto, igual ao subdominio em `SUPABASE_URL`.)
+
+4. **Testar localmente (opcional):** copia [supabase/.env.edge.example](./supabase/.env.edge.example) para `supabase/.env.edge`, preenche `ASAAS_WEBHOOK_TOKEN`, depois:  
+   `supabase functions serve asaas-webhook --env-file supabase/.env.edge`
+
+**B) Painel Asaas (sandbox ou producao)**
+
+1. Se nao encontrares **Integracoes → Webhooks** no menu, abre diretamente (sandbox):  
+   `https://sandbox.asaas.com/customerConfigIntegrations/webhooks`  
+   (Producao: troca o dominio pelo da conta real, se aplicavel.)
+
+2. **Criar Webhook** — preenche URL (Edge ou billing Node), **Gerar token** (ou token proprio conforme regras Asaas), email de erro, API **v3**, webhook **ativo**.
+
+3. **Tipo de envio** — na conta do projeto esta definido como **Nao sequencial** (na API Asaas: `NON_SEQUENTIALLY`). O Asaas **envia os dados** do evento no corpo do `POST` normalmente, mas as notificacoes **podem chegar em paralelo** e **sem ordem garantida** entre si (nao e uma fila estritamente ordenada). Implicacoes para o backend: nao assumir ordem fixa (ex.: `PAYMENT_RECEIVED` antes/depois de outros tipos); preferir operacoes **idempotentes** onde possivel (`upsert`, mesmo `external_event_id` com cuidado). O modo **Sequencial** (`SEQUENTIALLY`) serializa envios, mas se o endpoint falhar pode **pausar a fila** de sincronizacao — ver [doc Asaas sobre webhooks e fila](https://docs.asaas.com/docs/receba-eventos-do-asaas-no-seu-endpoint-de-webhook).
+
+4. **Eventos** — na conta do projeto foram ativadas **todas** as opcoes nas secoes abaixo (Mar 2026). Lista de referencia: [secao *Eventos habilitados no Asaas*](#eventos-habilitados-no-asaas-documentacao-da-conta).
+
+5. O token do Asaas deve ser **identico** ao `ASAAS_WEBHOOK_TOKEN` definido nos **Secrets** da Edge Function (ou no `.env` do billing, se usares essa rota).
+
+**C) Billing-service Node (alternativa)**
+
+1. Sobe o billing na **4000** + tunel HTTPS (**ngrok** / **Cloudflare**) para `.../api/webhooks/asaas`.  
+2. `ASAAS_WEBHOOK_TOKEN` em `apps/billing-service/.env`.
+
+**D) Testar**
+
+- Dashboard Supabase → **Edge Functions** → **Logs** (se usares Edge), ou logs do processo Node.  
+- Tabela **`payment_events`** e alteracoes em **`organizations`** / **`invoices`** conforme o evento.
+
+<span id="eventos-habilitados-no-asaas-documentacao-da-conta"></span>
+
+##### Eventos habilitados no Asaas (documentacao da conta)
+
+Configuracao registada no painel Asaas (**API v3**), com **todas** as opcoes marcadas nas categorias indicadas (capturas Mar 2026). **Tipo de envio do webhook:** **Nao sequencial** (`NON_SEQUENTIALLY`) — ver passo 3 em **B) Painel Asaas** acima.
+
+**Comportamento no backend** ([`asaas-webhook`](./supabase/functions/asaas-webhook/index.ts) / [`asaas.webhook.ts`](./apps/billing-service/src/adapters/asaas/asaas.webhook.ts)):
+
+- **Todos** os eventos validos geram registo de auditoria em **`payment_events`** (payload + `event_type`).
+- **Logica de dominio** (atualiza `organizations`, `subscriptions`, `invoices`) aplica-se **apenas** a:  
+  `PAYMENT_RECEIVED`, `PAYMENT_CONFIRMED`, `PAYMENT_OVERDUE`, `PAYMENT_REFUNDED`, `SUBSCRIPTION_CREATED`, `SUBSCRIPTION_DELETED`, `SUBSCRIPTION_INACTIVATED`.  
+- Os **demais** eventos listados abaixo ficam **so em auditoria** ate serem mapeados no codigo (notas fiscais, conta, Pix automatico, checkouts, chargebacks, etc.).
+
+**1) Cobranças (todos selecionados)**  
+`PAYMENT_AUTHORIZED`, `PAYMENT_AWAITING_RISK_ANALYSIS`, `PAYMENT_APPROVED_BY_RISK_ANALYSIS`, `PAYMENT_REPROVED_BY_RISK_ANALYSIS`, `PAYMENT_CREATED`, `PAYMENT_UPDATED`, `PAYMENT_CONFIRMED`, `PAYMENT_RECEIVED`, `PAYMENT_ANTICIPATED`, `PAYMENT_OVERDUE`, `PAYMENT_RESTORED`, `PAYMENT_DELETED`, `PAYMENT_REFUNDED`, `PAYMENT_REFUND_IN_PROGRESS`, `PAYMENT_REFUND_DENIED`, `PAYMENT_RECEIVED_IN_CASH_UNDONE`, `PAYMENT_CHARGEBACK_REQUESTED`, `PAYMENT_CHARGEBACK_DISPUTE`, `PAYMENT_AWAITING_CHARGEBACK_REVERSAL`, `PAYMENT_DUNNING_REQUESTED`, `PAYMENT_DUNNING_RECEIVED`, `PAYMENT_BANK_SLIP_VIEWED`, `PAYMENT_BANK_SLIP_CANCELLED`, `PAYMENT_CHECKOUT_VIEWED`, `PAYMENT_CREDIT_CARD_CAPTURE_REFUSED`, `PAYMENT_PARTIALLY_REFUNDED`, `PAYMENT_SPLIT_CANCELLED`, `PAYMENT_SPLIT_DIVERGENCE_BLOCK`, `PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED`.
+
+**2) Assinaturas (todos selecionados)**  
+`SUBSCRIPTION_CREATED`, `SUBSCRIPTION_UPDATED`, `SUBSCRIPTION_INACTIVATED`, `SUBSCRIPTION_DELETED`, `SUBSCRIPTION_SPLIT_DISABLED`, `SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK`, `SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK_FINISHED`.
+
+**3) Checkouts (todos selecionados)**  
+`CHECKOUT_CREATED`, `CHECKOUT_CANCELED`, `CHECKOUT_EXPIRED`, `CHECKOUT_PAID`.
+
+**4) Pix automatico (todos selecionados)**  
+`PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CREATED`, `PIX_AUTOMATIC_RECURRING_AUTHORIZATION_ACTIVATED`, `PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CANCELLED`, `PIX_AUTOMATIC_RECURRING_AUTHORIZATION_EXPIRED`, `PIX_AUTOMATIC_RECURRING_AUTHORIZATION_REFUSED`, `PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CREATED`, `PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_SCHEDULED`, `PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_REFUSED`, `PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CANCELLED`, `PIX_AUTOMATIC_RECURRING_ELIGIBILITY_UPDATED`.
+
+**5) Notas fiscais (todos selecionados)**  
+`INVOICE_CREATED`, `INVOICE_UPDATED`, `INVOICE_SYNCHRONIZED`, `INVOICE_AUTHORIZED`, `INVOICE_PROCESSING_CANCELLATION`, `INVOICE_CANCELED`, `INVOICE_CANCELLATION_DENIED`, `INVOICE_ERROR`.
+
+**6) Situação da conta (todos selecionados)**  
+`ACCOUNT_STATUS_BANK_ACCOUNT_INFO_APPROVED`, `ACCOUNT_STATUS_BANK_ACCOUNT_INFO_AWAITING_APPROVAL`, `ACCOUNT_STATUS_BANK_ACCOUNT_INFO_PENDING`, `ACCOUNT_STATUS_BANK_ACCOUNT_INFO_REJECTED`, `ACCOUNT_STATUS_COMMERCIAL_INFO_APPROVED`, `ACCOUNT_STATUS_COMMERCIAL_INFO_AWAITING_APPROVAL`, `ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRED`, `ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON`, `ACCOUNT_STATUS_COMMERCIAL_INFO_PENDING`, `ACCOUNT_STATUS_COMMERCIAL_INFO_REJECTED`, `ACCOUNT_STATUS_DOCUMENT_APPROVED`, `ACCOUNT_STATUS_DOCUMENT_AWAITING_APPROVAL`, `ACCOUNT_STATUS_DOCUMENT_PENDING`, `ACCOUNT_STATUS_DOCUMENT_REJECTED`, `ACCOUNT_STATUS_GENERAL_APPROVAL_APPROVED`, `ACCOUNT_STATUS_GENERAL_APPROVAL_AWAITING_APPROVAL`, `ACCOUNT_STATUS_GENERAL_APPROVAL_PENDING`, `ACCOUNT_STATUS_GENERAL_APPROVAL_REJECTED`.
+
+**7) Bloqueios de saldo (todos selecionados)**  
+`BALANCE_VALUE_BLOCKED`, `BALANCE_VALUE_UNBLOCKED`.
+
 ---
 
 ## Fase 1 — Autenticacao + Portal Shell (Semanas 2-3)
+
+<span id="fase-1"></span>
 
 **Objetivo:** Usuario cria conta, faz login, ve o portal com catalogo de SaaS.
 
@@ -57,7 +225,7 @@
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
     slug text UNIQUE NOT NULL,
-    stripe_customer_id text,
+    asaas_customer_id text,
     subscription_status text DEFAULT 'trialing',
     plan text DEFAULT 'free',
     trial_ends_at timestamptz DEFAULT now() + interval '14 days',
@@ -80,10 +248,10 @@
     )
   );
   ```
-- [ ] **1.3** Configurar Supabase Auth
+- [x] **1.3** Configurar Supabase Auth
   - Habilitar email/senha
   - Configurar redirect URLs
-  - Criar JWT hook (`custom_access_token_hook`) para incluir `org_id` e `portal_role` no token
+  - **JWT hook (`custom_access_token_hook`):** concluido — migration `010_custom_access_token_hook.sql`, hook ativo em hosted (`/auth/hooks`) e local (`config.toml`); access token do login inclui `org_id` e `portal_role`. Detalhes em [ARCHITECTURE.md](./ARCHITECTURE.md) §5.1.
 - [ ] **1.4** Implementar pagina `/register`
   - Formulario: nome completo, email, senha, nome da empresa
   - Ao registrar: criar user (Supabase Auth) → criar organization → criar org_member (account_owner)
@@ -144,6 +312,8 @@
 
 ## Fase 2 — RBAC Dual + Gestao de Usuarios (Semanas 4-5)
 
+<span id="fase-2"></span>
+
 **Objetivo:** Sistema de permissoes completo. Admin gerencia usuarios e papeis.
 
 ### Semana 4 — Modelo de Permissions
@@ -201,6 +371,8 @@
 ---
 
 ## Fase 3 — SaaS #1: Inventario de Equipamentos (Semanas 6-9)
+
+<span id="fase-3"></span>
 
 **Objetivo:** Modulo completo de gestao de equipamentos e manutencoes.
 
@@ -292,79 +464,131 @@
 
 ---
 
-## Fase 4 — Billing Service + Stripe (Semanas 10-12)
+## Fase 4 — Billing Service + Asaas (Semanas 10-13)
 
-**Objetivo:** Billing service rodando, integracao Stripe completa, controle de acesso por assinatura.
+<span id="fase-4"></span>
+
+**Objetivo:** Billing service rodando, integracao Asaas completa, checkout transparente com PIX/boleto/cartao, portal de assinatura proprio, emissao de NFS-e automatica, controle de acesso por assinatura.
+
+**Arquitetura hexagonal (billing plugavel):**
+- O servico expoe **portas** (`BillingGatewayPort`, `BillingPersistencePort`) e **dois adaptadores de gateway** prontos: **Asaas** (padrao, `BILLING_PROVIDER=asaas`) e **Pagar.me** (backup, `BILLING_PROVIDER=pagarme`).
+- Webhooks: `/api/webhooks/asaas` e `/api/webhooks/pagarme` mapeiam payloads para eventos de dominio comuns antes de gravar no Supabase.
+- **Producao inicial:** Asaas. **Alternativa imediata:** trocar env e reiniciar o container para Pagar.me, sem alterar o Next.js.
+
+**Nota:** Como o Asaas nao oferece checkout hosted nem customer portal, e necessario construir UI de checkout e gestao de assinatura. Isso adiciona ~2 semanas ao escopo original. Em compensacao, o Asaas oferece emissao de NFS-e integrada e plano gratuito.
 
 ### Semana 10 — Billing Service Base
 
-- [ ] **4.1** Implementar billing service (Node.js/TypeScript)
+- [ ] **4.1** Implementar billing service (Node.js/TypeScript) em **arquitetura hexagonal**
   - Express ou Fastify
-  - Rota POST `/api/subscriptions/checkout` — cria Stripe Checkout Session
-  - Rota POST `/api/subscriptions/portal` — cria Stripe Customer Portal Session
+  - Porta `BillingGatewayPort` com adaptadores Asaas (padrao) e Pagar.me (backup)
+  - Rota POST `/api/subscriptions/create` — cria customer (se necessario) e assinatura no gateway ativo (`credit_card`, `boleto`, `pix`; PIX completo apenas com Asaas)
+  - Rota POST `/api/subscriptions/cancel` — cancela assinatura
+  - Rota POST `/api/subscriptions/update-payment` — atualiza metodo de pagamento
   - Rota GET `/api/subscriptions/status/:orgId` — consulta status
+  - Rota GET `/api/subscriptions/invoices/:orgId` — lista cobrancas
+  - Rota GET `/api/subscriptions/provider` — retorna gateway ativo
   - Middleware: validar JWT do Supabase em requests autenticados
 - [ ] **4.2** Criar migration `007_subscriptions.sql`
   - Tabelas: `subscriptions`, `invoices`, `payment_events`
   - RLS: somente leitura para membros, escrita via service_role
-- [ ] **4.3** Implementar processamento de webhooks
-  - Rota POST `/api/webhooks/stripe`
-  - Verificar assinatura do Stripe (stripe-signature header)
-  - Eventos tratados:
-    - `checkout.session.completed` → ativar assinatura
-    - `invoice.payment_succeeded` → registrar fatura
-    - `invoice.payment_failed` → marcar como past_due
-    - `customer.subscription.updated` → atualizar plano
-    - `customer.subscription.deleted` → cancelar assinatura
+- [ ] **4.3** Implementar processamento de webhooks (hexagonal)
+  - Rota POST `/api/webhooks/asaas` — verificar `asaas-access-token`
+  - Rota POST `/api/webhooks/pagarme` — verificar `x-hub-signature` (HMAC-SHA1) quando `BILLING_PROVIDER=pagarme`
+  - Mapear payloads para eventos de dominio unicos antes de persistir
+  - Eventos Asaas tratados:
+    - `PAYMENT_CREATED` → registrar cobranca criada
+    - `PAYMENT_RECEIVED` → registrar pagamento confirmado, ativar assinatura
+    - `PAYMENT_OVERDUE` → marcar como past_due
+    - `PAYMENT_DELETED` → registrar cancelamento de cobranca
+    - `PAYMENT_REFUNDED` → registrar estorno
+    - `PAYMENT_CONFIRMED` → confirmar pagamento (PIX/boleto)
+  - Eventos Pagar.me (adapter backup): `subscription.created`, `charge.paid`, `charge.payment_failed`, `subscription.canceled`
   - Registrar evento em `payment_events` (auditoria)
-- [ ] **4.4** Dockerfile para billing service
-- [ ] **4.5** Deploy do billing service no Fly.io ou Render
+- [ ] **4.4** Configurar emissao de NFS-e automatica
+  - Habilitar emissao de notas fiscais no painel Asaas
+  - Configurar dados fiscais da empresa (CNPJ, inscricao municipal, regime tributario)
+  - Asaas emite NFS-e automaticamente apos pagamento confirmado
+- [ ] **4.5** Dockerfile para billing service
+- [ ] **4.6** Deploy do billing service no Fly.io ou Render
 
-### Semana 11 — Telas de Billing
+### Semana 11 — Checkout Transparente (UI propria)
 
-- [ ] **4.6** Implementar pagina `/settings/billing`
+- [ ] **4.7** Implementar componente `<CheckoutForm>`
+  - Selecao de metodo de pagamento: PIX, Boleto, Cartao de Credito
+  - Formulario de cartao: numero, validade, CVV, nome (tokenizacao via Asaas)
+  - Exibicao de QR Code PIX com copia-e-cola e timer de expiracao
+  - Exibicao de boleto com codigo de barras, linha digitavel e link para PDF
+  - Validacao client-side com Zod
+  - Loading states e feedback visual durante processamento
+  - Tratamento de erros (cartao recusado, timeout, etc.)
+- [ ] **4.8** Implementar pagina `/settings/billing/checkout`
+  - Resumo do plano: "Plano Pro — R$600/mes"
+  - Componente `<CheckoutForm>` integrado
+  - Redireciona para `/settings/billing` apos sucesso
+- [ ] **4.9** Implementar tokenizacao segura de cartao
+  - Usar tokenizacao do Asaas para capturar dados do cartao com seguranca
+  - Enviar apenas o token ao billing service (nunca dados crus do cartao)
+  - PCI compliance via tokenizacao client-side
+
+### Semana 12 — Portal de Assinatura (UI propria)
+
+- [ ] **4.10** Implementar pagina `/settings/billing`
   - Status da assinatura (ativa, trial, vencida, cancelada)
   - Dias restantes de trial
-  - Botao "Assinar Plano Pro" (redireciona para Stripe Checkout)
-  - Botao "Gerenciar Assinatura" (redireciona para Stripe Customer Portal)
-  - Historico de faturas (lista com links para PDF do Stripe)
+  - Botao "Assinar Plano Pro" (redireciona para `/settings/billing/checkout`)
+  - Secao "Metodo de pagamento atual" (ultimos 4 digitos do cartao, ou PIX/boleto)
+  - Botao "Trocar metodo de pagamento" (abre modal com formulario)
+  - Botao "Cancelar assinatura" (com confirmacao e motivo)
+  - Historico de cobrancas com status (paga, pendente, vencida) e links para boleto/comprovante/NFS-e
   - Acessivel apenas por `account_owner`, `account_admin`
-  - Faturas visiveis para `billing_viewer`
-- [ ] **4.7** Implementar controle de acesso por assinatura
+  - Cobrancas visiveis para `billing_viewer`
+- [ ] **4.11** Implementar controle de acesso por assinatura
   - RLS policy: bloquear acesso a dados se `subscription_status` nao e `active` ou `trialing`
   - Pagina de bloqueio: "Sua assinatura expirou. Contate o administrador."
   - Banner de aviso quando trial esta acabando (ultimos 3 dias)
   - Banner de aviso quando pagamento falhou (past_due)
-- [ ] **4.8** Implementar fluxo de trial
+- [ ] **4.12** Implementar fluxo de trial
   - 14 dias de trial ao criar conta
   - Acesso completo durante trial
   - Ao expirar: bloquear acesso aos SaaS, manter acesso ao portal/billing
   - CTA para assinar na pagina de bloqueio
+- [ ] **4.13** Implementar dunning (cobranca de inadimplentes)
+  - Logica de retry: ao receber `PAYMENT_OVERDUE`, agendar nova tentativa
+  - Notificacao por email ao admin da org apos falha de pagamento
+  - Grace period de 7 dias antes de cancelar assinatura
+  - Escalar status: `active` → `past_due` → `unpaid` → `canceled`
 
-### Semana 12 — Testes e Robustez
+### Semana 13 — Testes e Robustez
 
-- [ ] **4.9** Testar fluxo completo no Stripe Test Mode
+- [ ] **4.14** Testar fluxo completo no sandbox Asaas
   - Criar assinatura com cartao de teste
-  - Simular falha de pagamento
+  - Criar assinatura via PIX (simular pagamento)
+  - Criar assinatura via boleto (simular pagamento)
+  - Simular falha de pagamento (PAYMENT_OVERDUE)
   - Simular cancelamento
   - Verificar que webhooks atualizam corretamente o banco
-- [ ] **4.10** Implementar retry para webhooks
-  - Se processamento falhar, logar erro e retornar 500 (Stripe faz retry automatico)
+  - Verificar emissao de NFS-e apos pagamento
+- [ ] **4.15** Implementar retry para webhooks
+  - Se processamento falhar, logar erro e retornar 500
+  - Implementar idempotencia (verificar se evento ja foi processado)
   - Dead letter: logar eventos que falharam 3+ vezes para investigacao
-- [ ] **4.11** Testar isolamento de billing
+- [ ] **4.16** Testar isolamento de billing
   - Org A com assinatura ativa ve seus dados
   - Org B com assinatura cancelada nao ve dados
-  - Admin da Org A nao ve faturas da Org B
+  - Admin da Org A nao ve cobrancas da Org B
 
-**Entregavel:** Billing completo. Empresa assina, paga via Stripe, acesso e controlado por status de assinatura.
+**Entregavel:** Billing completo. Empresa assina via cartao, PIX ou boleto, NFS-e emitida automaticamente, acesso e controlado por status de assinatura. Portal de gestao de assinatura proprio.
 
 ---
 
-## Fase 5 — Polish + Lancamento (Semanas 13-14)
+## Fase 5 — Polish + Lancamento (Semanas 14-16)
+
+<span id="fase-5"></span>
 
 **Objetivo:** Produto pronto para primeiros clientes.
 
-### Semana 13 — Qualidade
+### Semana 14 — Qualidade
 
 - [ ] **5.1** Responsividade mobile
   - Testar todas as telas em mobile (375px) e tablet (768px)
@@ -388,20 +612,20 @@
   - Contraste de cores WCAG AA
   - Navegacao por teclado nas tabelas e modais
 
-### Semana 14 — Deploy e Lancamento
+### Semana 15-16 — Deploy e Lancamento
 
 - [ ] **5.6** Deploy producao
   - Vercel: conectar repo, configurar variaveis de ambiente
   - Fly.io/Render: deploy do billing service com variaveis de producao
   - Supabase: rodar migrations no projeto de producao
-  - Stripe: configurar webhook com URL de producao
+  - Asaas: configurar webhook URL de producao e dados fiscais para NFS-e
 - [ ] **5.7** Dominio e DNS
   - Configurar dominio customizado no Vercel
   - HTTPS automatico
 - [ ] **5.8** Monitoramento
   - Logs do billing service (Fly.io logs)
   - Supabase dashboard (queries, auth, storage)
-  - Stripe dashboard (MRR, churn, pagamentos)
+  - Asaas dashboard (cobrancas, recebimentos, NFS-e)
   - Alertas: configurar notificacao se billing service cair
 - [ ] **5.9** Documentacao para o usuario final
   - Guia de primeiros passos (onboarding)
@@ -413,7 +637,7 @@
   - Cadastrar equipamentos
   - Registrar manutencoes
   - Criar agendamento
-  - Assinar plano (Stripe test mode → live mode)
+  - Assinar plano via cartao, PIX e boleto (Asaas sandbox → producao)
   - Convidar usuario
   - Testar permissoes por papel
 
@@ -423,12 +647,14 @@
 
 ## Apos o Lancamento
 
+<span id="apos-o-lancamento"></span>
+
 ### Curto prazo (1-2 meses)
 
 - [ ] Feedback dos primeiros clientes
 - [ ] Correcao de bugs e ajustes de UX
 - [ ] Melhorar relatorios baseado em demanda real
-- [ ] Adicionar metodos de pagamento (boleto, PIX)
+- [ ] Otimizar conversao do checkout (A/B test em metodos de pagamento)
 - [ ] Email transacional: alerta de manutencao, convite, reset password
 
 ### Medio prazo (3-6 meses)
@@ -468,9 +694,10 @@
 | Risco | Probabilidade | Impacto | Mitigacao |
 |-------|--------------|---------|-----------|
 | Free tier do Supabase insuficiente | Media | Medio | Upgrade para Pro ($25/mes) quando necessario |
-| Billing service cai e perde webhook | Baixa | Alto | Stripe faz retry automatico; dead letter logging |
+| Billing service cai e perde webhook | Baixa | Alto | Asaas faz retry; dead letter logging; idempotencia |
 | Data leak entre tenants | Baixa | Critico | RLS em todas as tabelas + testes de isolamento |
-| Stripe nao disponivel no Brasil | Muito baixa | Alto | Stripe opera no Brasil; fallback: Mercado Pago |
+| Checkout proprio aumenta escopo | Alta | Medio | Componentizar checkout; reutilizar para futuros SaaS |
+| Asaas instavel em pico | Baixa | Alto | Fila de retry; fallback manual via dashboard Asaas |
 | Escopo cresce alem do planejado | Alta | Alto | Manter escopo rigido do MVP; features novas so apos lancamento |
 
 ---

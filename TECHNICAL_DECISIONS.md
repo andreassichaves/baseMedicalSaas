@@ -50,15 +50,15 @@
 **Justificativa:**
 - Separacao de responsabilidades: billing nao compete com UI por recursos
 - Deploy independente: atualizacao de billing nao requer redeploy do frontend
-- Resiliencia: se o frontend cair, webhooks do Stripe continuam sendo processados
+- Resiliencia: se o frontend cair, webhooks (Asaas ou Pagar.me) continuam sendo processados
 - Retry e filas: controle fino sobre reprocessamento de webhooks falhados
 - Auditoria: logs de pagamento centralizados e independentes
 - Multi-SaaS futuro: quando houver SaaS #2 e #3, o billing service ja esta pronto para atende-los
-- Seguranca: Stripe secret key isolada em um unico servico
+- Seguranca: chaves de API do gateway ativo isoladas no servico (`ASAAS_*` ou `PAGARME_*`)
 
 **Por que Node.js e nao Go:**
 - Mesmo ecossistema TypeScript do frontend — menos contexto mental para trocar
-- Stripe SDK identico (`stripe` npm package)
+- Asaas API via REST (chamadas HTTP diretas ou SDK `asaas` npm package)
 - Tipos compartilhados via monorepo (`packages/shared`)
 - Para billing isolado, a vantagem de performance do Go nao justifica a curva de aprendizado
 - Se no futuro um backend de dominio pesado for necessario (processamento de dados, relatorios massivos), Go entra como servico separado
@@ -73,23 +73,44 @@
 
 ---
 
-### Pagamentos: Stripe
+### Pagamentos: Asaas
 
-**Decisao:** Usar Stripe como processador de pagamentos.
+**Decisao:** Usar Asaas como processador de pagamentos e conta digital.
 
 **Justificativa:**
-- Suporte completo a Brasil: cartao, boleto, PIX
-- Checkout hosted: pagina de pagamento pronta, sem preocupacao com PCI compliance
-- Customer Portal: gestao de assinatura pelo cliente sem desenvolver UI
-- Webhooks confiaveis com retry automatico
-- Tax management (emissao de notas no futuro)
-- Dashboard de metricas financeiras (MRR, churn, etc.)
-- SDK maduro para Node.js
+- Gateway 100% brasileiro: suporte nativo a PIX, boleto e cartao de credito
+- PIX como metodo principal: taxa baixa (~R$0,49 por transacao) e liquidacao em D+1
+- Boleto bancario nativo: essencial para clientes PJ que preferem esse metodo
+- Emissao de NFS-e integrada: nota fiscal de servico emitida automaticamente apos pagamento — elimina necessidade de servico separado (NFE.io, eNotas)
+- Conta digital PJ: funciona como conta bancaria (recebe, transfere, paga boletos)
+- Plano gratuito disponivel: sem mensalidade, paga apenas por transacao
+- Assinaturas recorrentes via API: cobranca automatica mensal
+- Checkout transparente: formulario de pagamento embarcado no proprio site
+- Webhooks com autenticacao por token
+- Dashboard completo com gestao de cobrancas, clientes, notas fiscais e recebiveis
+- Antecipacao de recebiveis disponivel
+- Suporte em portugues via email e telefone
+
+**Trade-offs aceitos:**
+- Sem checkout hosted: necessario construir UI de checkout propria (checkout transparente)
+- Sem customer portal: necessario construir tela de gestao de assinatura
+- Sem dashboard de metricas SaaS (MRR, churn): implementar via queries no Supabase
+- SDK Node.js nao-oficial: usar chamadas REST diretas com fetch/axios (API bem documentada)
+- Recebimento padrao em D+30 (cartao): antecipacao disponivel com taxa
+- Empresa menor que Stripe/Pagar.me: porem estabelecida no mercado brasileiro
+
+**Adaptador Pagar.me (backup / alternativa):**
+- O billing service implementa **dois adaptadores** (`BillingGatewayPort`): Asaas (padrao) e Pagar.me
+- Troca apenas com `BILLING_PROVIDER=pagarme` e chaves no `.env` — sem mudanca no frontend nem no schema do banco (IDs externos continuam nas colunas `stripe_*`)
+- Uso recomendado como **plano B** se Asaas nao atender (taxa, disponibilidade, produto) ou para comparar custos em producao
 
 **Alternativas descartadas:**
-- Mercado Pago: bom para Brasil, porem API menos madura para SaaS com subscription management
-- PagSeguro/PagBank: limitado em funcionalidades de subscription
-- Implementacao propria: inviavel (PCI compliance, regulacao, fraude)
+- Stripe: excelente DX e checkout hosted, porem PIX e boleto sao secundarios; taxa mais alta para cartao nacional; recebimento trata como transacao internacional em alguns bancos; sem NFS-e
+- Pagar.me como **unico** gateway inicial: descartado em favor do Asaas (NFS-e integrada e PIX fixo); mantido como adaptador pronto no codigo
+- Mercado Pago: bom para marketplace, porem API menos madura para subscription management em SaaS B2B
+- PagSeguro/PagBank: limitado em funcionalidades de subscription e API
+- Iugu: API razoavel, mas instabilidade historica e suporte inferior
+- AbacatePay: PIX muito barato (R$0,80), porem empresa nova com ecossistema imaturo
 
 ---
 
@@ -238,7 +259,7 @@ A verificacao e em cascata: RLS bloqueia no banco, middleware bloqueia na rota, 
 - Upgrade para Pro ($25/mes) quando necessario
 - Custo: $0
 
-### Custo total inicial: $0 + taxas do Stripe por transacao
+### Custo total inicial: $0 + taxas do Asaas por transacao (plano gratuito)
 
 ---
 
@@ -253,7 +274,7 @@ A stack foi escolhida para ser portavel. Nenhuma decisao cria vendor lock-in sig
 | PostgreSQL (Supabase) | RDS PostgreSQL | Baixa (pg_dump/pg_restore) |
 | Supabase Auth | Manter como servico externo ou migrar para Cognito | Media |
 | Supabase Storage | S3 | Baixa |
-| Stripe | Stripe (sem mudanca) | Zero |
+| Asaas | Asaas (sem mudanca) | Zero |
 | RLS policies | Funcionam identicamente no RDS (feature do PostgreSQL) | Zero |
 
 **Recomendacao:** ao migrar, manter Supabase Auth como servico externo (continua funcionando apontado para RDS). Isso elimina a necessidade de migrar auth e minimiza mudancas no frontend.
@@ -300,8 +321,24 @@ Formato de commit padronizado para changelog automatico:
 | Mar 2026 | Multi-tenant por coluna org_id | Simplicidade para <500 tenants |
 | Mar 2026 | Next.js 15 com App Router | SSR para SEO + App Router para layouts complexos |
 | Mar 2026 | Monorepo com Turborepo | Tipos compartilhados, build paralelo |
-| Mar 2026 | Stripe para pagamentos | Suporte Brasil (cartao, boleto, PIX), checkout hosted |
+| Mar 2026 | Asaas para pagamentos | Gateway brasileiro: PIX, boleto, cartao; NFS-e integrada; plano gratuito |
+| Mar 2026 | Billing hexagonal + Pagar.me como adaptador backup | Trocar provedor via `BILLING_PROVIDER` sem mudar casos de uso |
+| Mar 2026 | PIX na criacao de assinatura (Asaas) | `paymentMethod: "pix"` no POST create; QR via cobranca + `/pixQrCode`; Pagar.me nao expoe PIX em assinatura na API usada — adaptador retorna erro orientando Asaas |
+| Mar 2026 | JWT: `custom_access_token_hook` versionado | Migration `010` + `config.toml` local + hook ativado no Dashboard; validado em producao/hosted (claims `org_id` / `portal_role` no access token) |
+| Mar 2026 | Webhook Asaas na Edge Function | `supabase/functions/asaas-webhook` + `verify_jwt = false`; secret `ASAAS_WEBHOOK_TOKEN`; URL publica sem tunel; nao duplicar com `/api/webhooks/asaas` no mesmo fluxo |
+| Mar 2026 | Webhook Asaas — escopo de eventos | Painel com todas as categorias ativas (cobrancas, assinaturas, checkouts, Pix auto, NFS-e, situacao conta, bloqueios saldo); so subset tem logica de dominio — ver DEVELOPMENT_PLAN *Eventos habilitados no Asaas* |
+| Mar 2026 | Webhook Asaas — tipo de envio | **Nao sequencial** (`NON_SEQUENTIALLY`): entregas podem ser paralelas e fora de ordem; backend idempotente; sequencial pausa fila se endpoint falhar — ver DEVELOPMENT_PLAN *Webhook Asaas* passo B.3 |
 
 ---
+
+## 10. Roadmap futuro (referencia)
+
+| Documento | Conteudo |
+|-----------|----------|
+| [FUTURE_MARKETPLACE_SPLIT_STRATEGY.md](./FUTURE_MARKETPLACE_SPLIT_STRATEGY.md) | Marketplace / provedores SaaS no portal: modelo agregador (recebe e repassa) vs split Asaas; dados, fases e compliance. **Nao faz parte do MVP atual.** |
+
+---
+
+**Documentacao de roteiro:** [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md) — secao **Etapas de desenvolvimento (visao geral)** (planejado x executado, mapa de fases, dependencias, pos-MVP).
 
 Ultima atualizacao: Marco 2026

@@ -26,9 +26,9 @@ graph TB
     end
 
     subgraph billingService [Billing Service - Node.js]
-        StripeCheckout[Criar Checkout Session]
-        StripeWebhook[Processar Webhooks]
-        StripePortal[Customer Portal Session]
+        AsaasSubscription[Criar/Gerenciar Assinaturas]
+        AsaasWebhook[Processar Webhooks]
+        CheckoutAPI[API de Checkout]
         SubMgmt[Gestao de Assinaturas]
     end
 
@@ -39,9 +39,10 @@ graph TB
         EdgeFn[Edge Functions]
     end
 
-    subgraph stripeLayer [Stripe]
-        StripeAPI[Stripe API]
-        StripeHosted[Checkout / Portal Hosted]
+    subgraph asaasLayer [Asaas]
+        AsaasAPI[Asaas API]
+        PaymentMethods[PIX / Boleto / Cartao]
+        NFSe[Emissao NFS-e]
     end
 
     Landing --> AuthPages
@@ -56,16 +57,21 @@ graph TB
     Dashboard --> BillingPage
 
     BillingPage --> billingService
-    billingService --> StripeAPI
-    StripeAPI --> StripeHosted
-    StripeAPI -->|Webhooks| StripeWebhook
-    StripeWebhook --> DB
+    billingService --> AsaasAPI
+    AsaasAPI --> PaymentMethods
+    AsaasAPI --> NFSe
+    AsaasAPI -->|Webhooks| AsaasWebhook
+    AsaasWebhook --> DB
 
     Equip --> DB
     Equip --> Storage
     portalWeb --> DB
     EdgeFn -->|Alertas de Manutencao| DB
 ```
+
+### 1.1 Etapas de desenvolvimento (onde esta o roteiro)
+
+O **plano macro por fases** (0 a 5), o resumo **planejado x executado**, **mapa de etapas**, **dependencias** e **pos-MVP** estao no **[DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)**, na secao **Etapas de desenvolvimento (visao geral)** (inclui as tabelas *Executado* e *Planejado mas pendente*). As tarefas detalhadas continuam nas secoes de cada fase no mesmo documento.
 
 ---
 
@@ -102,17 +108,43 @@ Microservico separado responsavel exclusivamente por billing. Nao processa logic
 
 | Metodo | Rota | Descricao |
 |--------|------|-----------|
-| POST | `/api/subscriptions/checkout` | Cria sessao Stripe Checkout |
-| POST | `/api/subscriptions/portal` | Cria sessao Stripe Customer Portal |
+| POST | `/api/subscriptions/create` | Cria customer (se necessario) e assinatura no gateway ativo |
+| POST | `/api/subscriptions/cancel` | Cancela assinatura |
+| POST | `/api/subscriptions/update-payment` | Atualiza metodo de pagamento |
 | GET | `/api/subscriptions/status/:orgId` | Consulta status da assinatura |
-| POST | `/api/webhooks/stripe` | Recebe webhooks do Stripe |
+| GET | `/api/subscriptions/invoices/:orgId` | Lista cobrancas da organizacao |
+| POST | `/api/webhooks/asaas` | Recebe webhooks do Asaas (alternativa ao Edge Function) |
+| `POST` | Edge Function `asaas-webhook` | URL `https://<ref>.supabase.co/functions/v1/asaas-webhook` — recebe webhooks Asaas com HTTPS publico; `verify_jwt = false`; secret `ASAAS_WEBHOOK_TOKEN`. Catalogo de eventos habilitados no painel e divisao *dominio vs auditoria*: [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md) (*Eventos habilitados no Asaas*). |
+| POST | `/api/webhooks/pagarme` | Recebe postbacks da Pagar.me (modo backup) |
+| GET | `/api/subscriptions/provider` | Retorna gateway ativo (`asaas` ou `pagarme`) |
+
+`POST /api/subscriptions/create` aceita `paymentMethod`: `credit_card`, `boleto` ou `pix`. **PIX em assinatura** esta implementado apenas no adaptador **Asaas** (`billingType: PIX` + `GET /payments/{id}/pixQrCode`); com `BILLING_PROVIDER=pagarme` o servico responde erro explicativo. A resposta JSON pode incluir `pix_qr_code` e `pix_copy_paste` quando o QR for obtido na hora.
+
+### 2.2.1 Arquitetura hexagonal (billing plugavel)
+
+O `apps/billing-service` segue **arquitetura hexagonal** para trocar o provedor de pagamento sem alterar regras de negocio nem o contrato HTTP do servico.
+
+| Camada | Papel |
+|--------|--------|
+| **Dominio** | Tipos neutros (`BillingDomainEvent`, `CreateSubscriptionInput`, etc.) |
+| **Porta `BillingGatewayPort`** | Contrato que qualquer gateway deve implementar: criar cliente, criar/cancelar assinatura, atualizar cartao |
+| **Porta `BillingPersistencePort`** | Contrato de persistencia (organizacao, assinaturas, faturas, eventos) |
+| **Adaptador Asaas** | Implementacao padrao (`BILLING_PROVIDER=asaas`) — REST v3 |
+| **Adaptador Pagar.me** | Implementacao alternativa (`BILLING_PROVIDER=pagarme`) — REST core v5 |
+| **Adaptador Supabase** | Implementa persistencia; colunas legadas `stripe_*` armazenam IDs externos de qualquer gateway |
+| **Caso de uso** | `BillingApplication` orquestra fluxos; webhooks mapeiam payload do provedor para `BillingDomainEvent` e aplicam na persistencia |
+
+**Selecao do provedor:** variavel de ambiente `BILLING_PROVIDER` (`asaas` padrao ou `pagarme`). Reiniciar o servico apos alterar.
 
 **Responsabilidades:**
-- Criar e gerenciar assinaturas via Stripe
-- Processar webhooks (pagamento confirmado, falha, cancelamento)
+- Criar e gerenciar customers e assinaturas via Asaas API
+- Processar webhooks (PAYMENT_RECEIVED, PAYMENT_OVERDUE, PAYMENT_REFUNDED, etc.)
+- Gerar cobrancas via PIX (QR code), boleto e cartao tokenizado
 - Atualizar status da organizacao no Supabase
-- Registrar historico de faturas e eventos de pagamento
+- Registrar historico de cobrancas e eventos de pagamento
+- Implementar dunning (retry de cobranca em caso de falha)
 - Fila de retry para webhooks com falha
+- NFS-e emitida automaticamente pelo Asaas apos pagamento
 
 ### 2.3. Supabase
 
@@ -124,15 +156,31 @@ Microservico separado responsavel exclusivamente por billing. Nao processa logic
 | Edge Functions | Cron de alertas de manutencao, notificacoes |
 | Realtime | Dashboard ao vivo (futuro) |
 
-### 2.4. Stripe
+### 2.4. Asaas
 
 | Recurso | Uso |
 |---------|-----|
-| Checkout | Pagina de pagamento hospedada |
-| Subscriptions | Cobranca recorrente mensal |
-| Customer Portal | Gestao de cartao, faturas, cancelamento pelo cliente |
-| Webhooks | Notificacao de eventos (pagamento, falha, cancelamento) |
-| Payment Methods | Cartao, Boleto, PIX (Brasil) |
+| Customers API | Cadastro de clientes com CPF/CNPJ para cobranca e NFS-e |
+| Subscriptions API | Assinaturas recorrentes com cobranca automatica |
+| Payments API | Cobrar via PIX, boleto ou cartao tokenizado |
+| Tokenizacao | Tokenizacao de cartao no frontend (PCI compliance) |
+| Webhooks | Notificacao de eventos (PAYMENT_RECEIVED, PAYMENT_OVERDUE, etc.) |
+| PIX | Geracao de QR code e cobranca instantanea (D+1) |
+| Boleto | Geracao de boleto bancario com codigo de barras e linha digitavel |
+| Cartao de Credito | Cobranca recorrente tokenizada |
+| NFS-e | Emissao automatica de nota fiscal de servico apos pagamento |
+| Conta Digital | Saldo, transferencias e gestao financeira integrada |
+
+### 2.5. Checkout Transparente (UI propria)
+
+Como o Asaas nao oferece checkout hosted nem customer portal, o sistema implementa:
+
+| Componente | Descricao |
+|-----------|-----------|
+| `<CheckoutForm>` | Formulario de pagamento embarcado: selecao PIX/boleto/cartao, tokenizacao |
+| `/settings/billing` | Portal de assinatura proprio: status, faturas, troca de metodo, cancelamento |
+| `/settings/billing/checkout` | Pagina de checkout com resumo do plano e formulario de pagamento |
+| Dunning service | Logica de retry e escalonamento de inadimplencia (past_due → unpaid → canceled) |
 
 ---
 
@@ -257,7 +305,7 @@ erDiagram
         uuid id PK
         text name
         text slug UK
-        text stripe_customer_id
+        text asaas_customer_id
         text subscription_status
         text plan
         timestamptz trial_ends_at
@@ -334,9 +382,10 @@ erDiagram
     subscriptions {
         uuid id PK
         uuid org_id FK
-        text stripe_subscription_id UK
+        text asaas_subscription_id UK
         text status
         text plan
+        text payment_method
         timestamptz current_period_start
         timestamptz current_period_end
         timestamptz canceled_at
@@ -346,20 +395,23 @@ erDiagram
     invoices {
         uuid id PK
         uuid org_id FK
-        text stripe_invoice_id UK
+        text asaas_payment_id UK
         integer amount_cents
         text currency
         text status
-        text hosted_invoice_url
+        text payment_method
+        text boleto_url
+        text pix_qr_code
         timestamptz period_start
         timestamptz period_end
+        timestamptz paid_at
         timestamptz created_at
     }
 
     payment_events {
         uuid id PK
         uuid org_id FK
-        text stripe_event_id UK
+        text asaas_event_id UK
         text event_type
         jsonb payload
         timestamptz created_at
@@ -437,7 +489,7 @@ Representa um tenant (empresa cliente). Toda query de dados filtra por `org_id`.
 | `id` | uuid PK | Identificador unico |
 | `name` | text | Nome da empresa |
 | `slug` | text UNIQUE | Slug para URL (ex: fabrica-xyz) |
-| `stripe_customer_id` | text | ID do cliente no Stripe |
+| `asaas_customer_id` | text | ID do cliente no Asaas |
 | `subscription_status` | text | `trialing`, `active`, `past_due`, `canceled`, `unpaid` |
 | `plan` | text | `free`, `starter`, `pro`, `enterprise` |
 | `trial_ends_at` | timestamptz | Fim do periodo de trial |
@@ -554,36 +606,93 @@ Agendamentos recorrentes de manutencao preventiva.
 
 Todas as tabelas com dados de tenant possuem RLS habilitado. O `org_id` do usuario autenticado e extraido do JWT via claim customizado.
 
-### 5.1. Claim customizado no JWT
+### 5.1. Claim customizado no JWT (`custom_access_token_hook`)
 
-Ao fazer login, o Supabase Auth inclui o `org_id` e `portal_role` do usuario no JWT:
+**Problema:** politicas RLS usam `auth.jwt()->>'org_id'` para saber o tenant. O Supabase Auth **nao** le a tabela `org_members` sozinho: sem um passo extra, esses claims **nao existem** no JWT e o isolamento por org quebra (ou o cliente precisaria enviar `org_id` manualmente, o que e inseguro).
 
-```sql
-CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
-RETURNS jsonb LANGUAGE plpgsql AS $$
-DECLARE
-  claims jsonb;
-  member_record RECORD;
-BEGIN
-  claims := event->'claims';
+**Solucao:** um **Auth Hook** do tipo *Custom Access Token* roda **antes de cada emissao/refresh** do access token. Uma funcao Postgres (`public.custom_access_token_hook`) recebe o evento com `user_id` e `claims`, busca a linha ativa em `org_members` e **injeta** `org_id` e `portal_role` no objeto `claims` devolvido. Assim, qualquer chamada com o JWT do usuario carrega o tenant para o Postgres aplicar RLS.
 
-  SELECT om.org_id, om.portal_role
-  INTO member_record
-  FROM org_members om
-  WHERE om.user_id = (event->>'user_id')::uuid
-    AND om.status = 'active'
-  LIMIT 1;
+#### Explicacao em linguagem simples
 
-  IF member_record IS NOT NULL THEN
-    claims := jsonb_set(claims, '{org_id}', to_jsonb(member_record.org_id));
-    claims := jsonb_set(claims, '{portal_role}', to_jsonb(member_record.portal_role));
-  END IF;
+Imagine o **JWT** como um **cracha** digital que o app envia em toda requisicao ao banco. O **Postgres**, ao avaliar o RLS, so consegue “ler” o que esta **escrito nesse cracha** (funcao `auth.jwt()`). Ele **nao** faz um `JOIN` automatico com `org_members` por magica.
 
-  event := jsonb_set(event, '{claims}', claims);
-  RETURN event;
-END;
-$$;
-```
+- **Sem o hook:** o cracha traz sobretudo quem e o usuario (`sub`, email, `role` authenticated, etc.), mas **nao** traz “qual organizacao ele representa agora”. As policies que comparam `org_id` da linha com `auth.jwt()->>'org_id'` **nao tem** esse valor — o isolamento por tenant falha ou voce seria forcado a mandar `org_id` do navegador, o que o usuario poderia falsificar.
+- **Com o hook:** no instante em que o Auth **vai emitir** (ou **renovar**) o access token, ele chama a funcao `custom_access_token_hook`. Essa funcao olha na tabela **`org_members`**: “este `user_id` tem membership **active** em qual `org_id` e com qual `portal_role`?” e **grava essas respostas dentro do JWT** como claims extras. A partir dai, toda query autenticada leva o tenant no cracha e o RLS pode comparar com seguranca.
+
+**Quem chama o hook:** o servico **Supabase Auth** (GoTrue), nao o seu frontend. O Next.js apenas recebe o token ja “carimbado”.
+
+**Local vs nuvem:** a **funcao SQL** vive no banco (migration). O **Auth** precisa estar **configurado para usar** essa funcao: no **local** isso esta no `config.toml`; no **projeto hospedado**, tambem e preciso ligar o hook no **Dashboard** (senao o Auth ignora a funcao mesmo ela existindo).
+
+#### Sequencia no login (resumo)
+
+1. Usuario envia email/senha (ou outro metodo) ao Auth.
+2. Auth valida credenciais.
+3. Antes de devolver o access token, Auth chama `public.custom_access_token_hook` com `user_id` e claims atuais.
+4. A funcao consulta `org_members` (`status = 'active'`) e, se encontrar, acrescenta `org_id` e `portal_role` aos claims.
+5. Auth assina o JWT com esses claims e entrega ao cliente.
+6. O cliente (Supabase JS, etc.) envia esse JWT nas chamadas ao Postgres; o RLS le `auth.jwt()->>'org_id'` e aplica isolamento.
+
+**Implementacao no repo**
+
+| Artefato | Papel |
+|----------|--------|
+| `supabase/migrations/010_custom_access_token_hook.sql` | Cria a funcao com `SECURITY DEFINER`, `search_path = public`, e concede `EXECUTE` apenas a `supabase_auth_admin` (exigencia do Auth). |
+| `supabase/config.toml` → `[auth.hook.custom_access_token]` | **Ambiente local (`supabase start`):** aponta o Auth para a funcao Postgres `pg-functions://postgres/public/custom_access_token_hook`. |
+
+#### Como executar (onde clicar e em que ordem)
+
+**1) Achar o ID do projeto (ref)**  
+No [Dashboard Supabase](https://supabase.com/dashboard), abra o projeto. O **project ref** aparece na URL ao navegar dentro dele, no formato:
+
+`https://supabase.com/dashboard/project/<PROJECT_REF>/...`
+
+Exemplo: se a URL for `https://supabase.com/dashboard/project/abcdxyz123/editor`, entao `PROJECT_REF` = `abcdxyz123`. Tambem em **Project Settings** (icone de engrenagem) → **General** → **Reference ID**.
+
+**2) Link direto para a tela de Hooks (nuvem)**  
+Abra no navegador (substitua `<PROJECT_REF>`):
+
+`https://supabase.com/dashboard/project/<PROJECT_REF>/auth/hooks`
+
+Documentacao oficial do fluxo: [Auth Hooks](https://supabase.com/docs/guides/auth/auth-hooks) (secao *Deploying*: *Authentication > Hooks*).
+
+**3) Criar a funcao no banco **antes** de ligar o hook**  
+Sem a funcao no Postgres, o painel nao tera o que selecionar ou o Auth falhara ao chamar.
+
+- **Opcao A — CLI (recomendado):** na raiz do monorepo, com [Supabase CLI](https://supabase.com/docs/guides/cli) logado e linkado ao projeto remoto:
+  - `supabase link --project-ref <PROJECT_REF>`
+  - `supabase db push`  
+  Isso aplica as migrations, inclusive `010_custom_access_token_hook.sql`.
+
+- **Opcao B — SQL Editor no Dashboard:** **SQL Editor** → New query → copiar o conteudo completo de `supabase/migrations/010_custom_access_token_hook.sql` → **Run**. (Mesmo efeito que a migration, se ainda nao existir a funcao.)
+
+**4) Ativar o hook na tela Hooks**  
+Na URL `/auth/hooks` do passo 2:
+
+1. Localize o bloco **Custom Access Token** (ou lista de hooks; o nome pode ser exatamente *Custom Access Token* na documentacao).
+2. **Ative** o hook (toggle *Enable* / *Enabled*, conforme a UI).
+3. Tipo de implementacao: escolha **Postgres** / **Database function** / **SQL** (o rotulo varia; **nao** escolha HTTP/Edge Function para este projeto).
+4. **Schema:** `public`.
+5. **Funcao:** `custom_access_token_hook` (nome exato da migration).
+6. Salve / confirme as alteracoes.
+
+Se nao aparecer a funcao no dropdown, volte ao passo 3 e confira no **SQL Editor** com:
+
+`select proname from pg_proc join pg_namespace n on n.oid = pronamespace where n.nspname = 'public' and proname = 'custom_access_token_hook';`
+
+**5) Validar**  
+Faca **logout** e **login** de novo (ou refresh de sessao). Decodifique o access token (ex.: [jwt.io](https://jwt.io)) e confira se existem claims **`org_id`** e **`portal_role`** para um usuario com linha `active` em `org_members`.
+
+**Ambiente local (`supabase start`)**  
+1. Docker Desktop rodando.  
+2. Na pasta `supabase/`, o `config.toml` ja contem `[auth.hook.custom_access_token]` com `uri = "pg-functions://postgres/public/custom_access_token_hook"`.  
+3. `supabase start` (ou `supabase db reset` para aplicar migrations do zero).  
+4. Nao existe a mesma tela de Hooks do hosted no Studio local da mesma forma: a configuracao e **so** o `config.toml`.
+
+**Se ainda nao achar o menu:** use sempre o link direto do passo 2. Em alguns layouts, **Authentication** fica na barra lateral esquerda; **Hooks** pode ser uma **subsecao** dentro de Authentication (role a pagina ou use a URL).
+
+**Detalhe:** se um usuario tiver mais de uma org (varias linhas em `org_members`), a funcao usa a **primeira** por `joined_at` (ordem deterministica); um modelo de “org ativa” no futuro pode refinar isso.
+
+SQL fonte: ver `supabase/migrations/010_custom_access_token_hook.sql`.
 
 ### 5.2. Policies de isolamento por tenant
 
@@ -719,59 +828,97 @@ sequenceDiagram
 
 ## 7. Fluxo de Pagamento
 
+### 7.1. Fluxo de pagamento via Cartao
+
 ```mermaid
 sequenceDiagram
     participant Admin as Admin da Empresa
     participant App as Next.js
     participant Billing as Billing Service
-    participant Stripe as Stripe API
+    participant Asaas as Asaas API
     participant DB as Supabase PostgreSQL
 
     Admin->>App: Acessa /settings/billing
     Admin->>App: Clica "Assinar Plano Pro"
-    App->>Billing: POST /api/subscriptions/checkout
-    Billing->>DB: Busca org.stripe_customer_id
-    Billing->>Stripe: stripe.checkout.sessions.create()
-    Stripe-->>Billing: session.url
-    Billing-->>App: Redireciona para Stripe Checkout
-    Admin->>Stripe: Preenche dados de pagamento
-
-    Note over Stripe: Pagamento processado
-
-    Stripe->>Billing: Webhook checkout.session.completed
+    App->>App: Redireciona para /settings/billing/checkout
+    Admin->>App: Preenche dados do cartao no CheckoutForm
+    App->>App: Tokeniza cartao (Asaas tokenization)
+    App->>Billing: POST /api/subscriptions/create (token + orgId)
+    Billing->>DB: Busca org.asaas_customer_id
+    Billing->>Asaas: POST /customers (se novo)
+    Billing->>Asaas: POST /subscriptions (card_token + value + cycle)
+    Asaas-->>Billing: subscription.id + status
     Billing->>DB: UPDATE organizations SET subscription_status=active
     Billing->>DB: INSERT subscriptions
-    Billing->>DB: INSERT payment_events
-    Billing-->>Stripe: 200 OK
+    Billing-->>App: { success: true }
+    App->>App: Redireciona para /dashboard
 
-    Admin->>App: Retorna ao /dashboard
-    App->>DB: Query com RLS (subscription ativa)
-    DB-->>App: Acesso liberado aos SaaS
+    Note over Asaas: Cobranca processada + NFS-e emitida
+
+    Asaas->>Billing: Webhook PAYMENT_RECEIVED
+    Billing->>DB: INSERT invoices
+    Billing->>DB: INSERT payment_events
+    Billing-->>Asaas: 200 OK
 ```
 
-### 7.1. Fluxo de falha de pagamento
+### 7.2. Fluxo de pagamento via PIX
 
 ```mermaid
 sequenceDiagram
-    participant Stripe as Stripe API
+    participant Admin as Admin da Empresa
+    participant App as Next.js
+    participant Billing as Billing Service
+    participant Asaas as Asaas API
+    participant DB as Supabase PostgreSQL
+
+    Admin->>App: Seleciona PIX no CheckoutForm
+    App->>Billing: POST /api/subscriptions/create (method=pix + orgId)
+    Billing->>Asaas: POST /subscriptions (billingType=PIX)
+    Asaas-->>Billing: subscription.id + first payment.id
+    Billing->>Asaas: GET /payments/{id}/pixQrCode
+    Asaas-->>Billing: QR code + payload copia-e-cola + expiration
+    Billing->>DB: INSERT subscriptions (status=pending)
+    Billing-->>App: { qr_code, copy_paste_code, expiration }
+    App->>App: Exibe QR code com timer
+
+    Note over Admin: Paga via app do banco
+
+    Asaas->>Billing: Webhook PAYMENT_CONFIRMED
+    Billing->>DB: UPDATE organizations SET subscription_status=active
+    Billing->>DB: UPDATE subscriptions SET status=active
+    Billing->>DB: INSERT invoices
+    Billing-->>Asaas: 200 OK
+```
+
+### 7.3. Fluxo de falha de pagamento (dunning)
+
+```mermaid
+sequenceDiagram
+    participant Asaas as Asaas API
     participant Billing as Billing Service
     participant DB as Supabase PostgreSQL
     participant Edge as Edge Function
 
-    Stripe->>Billing: Webhook invoice.payment_failed
+    Asaas->>Billing: Webhook PAYMENT_OVERDUE
     Billing->>DB: UPDATE organizations SET subscription_status=past_due
     Billing->>DB: INSERT payment_events
-    Billing-->>Stripe: 200 OK
+    Billing-->>Asaas: 200 OK
 
-    Note over Stripe: Stripe tenta novamente (retry automatico)
+    Note over Billing: Grace period de 7 dias
 
-    Stripe->>Billing: Webhook customer.subscription.deleted
-    Billing->>DB: UPDATE organizations SET subscription_status=canceled
-    Billing->>DB: UPDATE subscriptions SET canceled_at=now()
-    Billing-->>Stripe: 200 OK
+    Billing->>Edge: Agenda notificacao por email ao admin
+    Edge->>Edge: Envia email "pagamento falhou"
 
-    Edge->>DB: Verifica orgs com status canceled
-    Edge->>Edge: Envia email de notificacao
+    Note over Billing: Retry apos 3 e 7 dias
+
+    alt Pagamento bem-sucedido no retry
+        Asaas->>Billing: Webhook PAYMENT_RECEIVED
+        Billing->>DB: UPDATE organizations SET subscription_status=active
+    else Falha apos todos os retries
+        Billing->>DB: UPDATE organizations SET subscription_status=canceled
+        Billing->>DB: UPDATE subscriptions SET canceled_at=now()
+        Edge->>Edge: Envia email "assinatura cancelada"
+    end
 ```
 
 ---
@@ -815,6 +962,12 @@ portal-saas/
 │   │   │   ├── portal/              # Componentes do portal
 │   │   │   ├── equipment/           # Componentes do SaaS #1
 │   │   │   └── billing/             # Componentes de billing
+│   │   │       ├── checkout-form.tsx  # Formulario de pagamento (PIX/boleto/cartao)
+│   │   │       ├── pix-payment.tsx    # QR code PIX com timer
+│   │   │       ├── boleto-payment.tsx # Exibicao de boleto
+│   │   │       ├── card-form.tsx      # Formulario de cartao com tokenizacao
+│   │   │       ├── subscription-status.tsx  # Status da assinatura
+│   │   │       └── invoice-history.tsx      # Historico de faturas
 │   │   ├── hooks/
 │   │   │   ├── use-auth.ts
 │   │   │   ├── use-permissions.ts
@@ -837,8 +990,9 @@ portal-saas/
 │       │   │   ├── subscriptions.ts
 │       │   │   └── webhooks.ts
 │       │   ├── services/
-│       │   │   ├── stripe.service.ts
-│       │   │   └── subscription.service.ts
+│       │   │   ├── asaas.service.ts
+│       │   │   ├── subscription.service.ts
+│       │   │   └── dunning.service.ts
 │       │   ├── middleware/
 │       │   │   └── auth.ts           # Validacao JWT Supabase
 │       │   └── types/
@@ -892,7 +1046,7 @@ portal-saas/
 | Next.js Frontend | Vercel (Hobby) | $0 |
 | Billing Service | Fly.io ou Render | $0 (free tier) |
 | PostgreSQL + Auth + Storage | Supabase (Free) | $0 |
-| Pagamentos | Stripe | 2.99% + R$0.39 por transacao |
+| Pagamentos | Asaas (plano gratuito) | Cartao ~2.99%; PIX ~R$0,49; Boleto ~R$1,99 por transacao |
 
 ### 9.1. Deploy pipeline
 
@@ -912,11 +1066,18 @@ git push → GitHub
 | Autenticacao | Supabase Auth (bcrypt, JWT, refresh tokens) |
 | Isolamento de dados | RLS por org_id em todas as tabelas |
 | Permissoes | RBAC dual verificado no middleware e no frontend |
-| Billing secrets | Apenas no billing service (server-side) |
-| Webhooks | Verificacao de assinatura Stripe (stripe-signature header) |
+| Billing secrets | Asaas API key apenas no billing service (server-side) |
+| Webhooks | Verificacao de access token do Asaas (asaas-access-token header) |
+| Tokenizacao | Dados de cartao tokenizados no frontend via Asaas; billing service nunca recebe dados crus |
 | HTTPS | Automatico (Vercel, Fly.io, Supabase) |
 | Senhas | Gerenciadas pelo Supabase Auth (nao armazenadas pela aplicacao) |
 | SQL Injection | Prevenido pelo Supabase SDK (queries parametrizadas) |
+
+---
+
+## 11. Evolucao futura — marketplace e repasse a provedores
+
+O desenho atual assume **um operador do portal** cobrando **clientes finais** via uma conta Asaas. Para permitir que **terceiros** oferecam SaaS pelo mesmo portal com **repasse de receita**, existem dois modelos principais: **agregador** (liquida na plataforma e repassa depois) ou **split Asaas** (divisao automatica entre carteiras na API). Detalhes, riscos, dados e fases estao em [FUTURE_MARKETPLACE_SPLIT_STRATEGY.md](./FUTURE_MARKETPLACE_SPLIT_STRATEGY.md).
 
 ---
 

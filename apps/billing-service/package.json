@@ -10,8 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "latest",
-    "express": "^5",
-    "stripe": "latest"
+    "express": "^5"
   },
   "devDependencies": {
     "@types/express": "^5",
@@ -20,6 +19,6 @@
     "typescript": "^5"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
